@@ -16,6 +16,8 @@ import loompy
 import random
 import torch.utils.data as data
 from tensorboardX import SummaryWriter
+import math
+from sklearn.cluster import KMeans
 
 def sphere_data(data):
     print("sphere_data", data.shape)
@@ -23,7 +25,10 @@ def sphere_data(data):
     # print("mean.shape", mean.shape)
     # std = np.expand_dims(np.std(data, axis=1),axis=1) + 1e-4
     # print("std.shape", std.shape)
-    return (data - np.mean(data)) / np.std(data)
+    print("mean", np.mean(data))
+    print("std", np.std(data))
+    # return (data - np.mean(data)) / np.std(data)
+    return (data - 0.08985414976598326) / 1.4195666640784363
 
 def get_average_cells(cells, clusters, end_cluster, num_to_average, randomize_averaging=False):
     r = list(range(len(clusters)))
@@ -119,7 +124,7 @@ class SimpleLinearAutoEncoder(nn.Module):
         return x
 
 class SELUSimpleLinearAutoEncoder(nn.Module):
-    def __init__(self, num_genes=100, hidden_dim=512, emb_dim=32):
+    def __init__(self):
         super(SELUSimpleLinearAutoEncoder, self).__init__()
         self.encoder = nn.Sequential(
             nn.Conv1d(3, 8, 101, padding=50),
@@ -139,39 +144,38 @@ class SELUSimpleLinearAutoEncoder(nn.Module):
         x = self.encoder(orig_x)
         x = self.decoder(torch.cat((orig_x, x), dim=1))
         return x
-# torch.nn.Conv1d(1, 1, 15, 15)(torch.nn.Conv1d(1, 1, 10, 3)(torch.nn.Conv1d(3, 1, 1)
+
 
 class CNNAutoEncoder(nn.Module):
     def __init__(self):
         super(CNNAutoEncoder, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Conv1d(3, 1, 1),
+            nn.Conv1d(3, 16, 101, padding=50),
             nn.SELU(),
-            torch.nn.Conv1d(1, 1, 10, 2),
+            nn.Conv1d(16, 8, 101, padding=50),
             nn.SELU(),
-            torch.nn.Conv1d(1, 1, 10, 5),
+            nn.Conv1d(8, 8, 101, padding=50),
             nn.SELU(),
-            # torch.nn.Conv1d(1, 1, 10, 2),
-            # nn.SELU(),
+            nn.Conv1d(8, 1, 101, padding=50),
+            nn.SELU(),
         )
 
         self.decoder = nn.Sequential(
-            # torch.nn.ConvTranspose1d(1, 1, 10, 2),
-            # nn.SELU(),
-            torch.nn.ConvTranspose1d(1, 1, 10, 5),
+            nn.Conv1d(4, 8, 101, padding=50),
             nn.SELU(),
-            torch.nn.ConvTranspose1d(1, 1, 10, 2),
+            nn.Conv1d(8, 8, 101, padding=50),
             nn.SELU(),
-            nn.ConvTranspose1d(1, 3, 1),
-            nn.LeakyReLU(),
+            nn.Conv1d(8, 8, 101, padding=50),
+            nn.SELU(),
+            nn.Conv1d(8, 3, 101, padding=50),
+            nn.SELU(),
         )
 
-    def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
+    def forward(self, orig_x):
+        x = self.encoder(orig_x)
+        x = self.decoder(torch.cat((orig_x, x), dim=1))
         return x
-
-
+# torch.nn.Conv1d(1, 1, 15, 15)(torch.nn.Conv1d(1, 1, 10, 3)(torch.nn.Conv1d(3, 1, 1)
 
 
 def display_heatmap(cells, clusters, decoder_output, start_cluster, end_cluster):
@@ -206,6 +210,40 @@ def display_heatmap(cells, clusters, decoder_output, start_cluster, end_cluster)
     ax.set_title(f'predicted')
 
     plt.imshow(cell_cpu, cmap='hot', interpolation='nearest',  norm=matplotlib.colors.Normalize(vmin=-2.0, vmax=2.0, clip=True))
+
+def get_ground_truth_cluster_order(dataset):
+    if "hgForebrainGlut" in dataset:
+        return {
+            0: 1,
+            1: 2,
+            2: 3,
+            3: 4,
+            4: 5,
+            5: 6,
+            6: None
+        }
+    elif "DentateGyrus" in dataset:
+        # 6->7->10
+        # 6->8->11->12
+        # 6->9->3->5->4
+        # 6->9->0->1
+        # 6->9->0->2
+        return {
+            6: None,
+            7: 10,
+            10: None,
+            8: 11,
+            11: 12,
+            12: None,
+            9: None,
+            3: 5,
+            5: 4,
+            4: None,
+            0: None,
+            1: None,
+            2: None,
+            13: None,
+        }
 
 def display_plot(args, model):
     ds = loompy.connect(args.dataset)
@@ -242,13 +280,13 @@ def display_plot(args, model):
         cells = sphere_data(cells)
         cells = cells[:args.max_count]
         colors = clusters[:args.max_count]
-
+        clusters = clusters[:args.max_count]
         cells = torch.FloatTensor(cells)
         cells = cells.cuda()
 
         with torch.no_grad():
             encoder_output = model.encoder(cells)
-            if args.model_type == 'selu-linear':
+            if args.model_type == 'selu-linear' or args.model_type == 'cnn':
                 decoder_output = model.decoder(torch.cat((cells, encoder_output), dim=1))
             else:
                 decoder_output = model.decoder(encoder_output)
@@ -269,7 +307,7 @@ def display_plot(args, model):
         pca = decomposition.PCA(n_components=args.dims)
         if args.use_autoencoder:
             total_points = np.concatenate((set_for_dimen_reduction, quiver_ends),axis=0)
-            pca.fit(total_points)
+            pca.fit(set_for_dimen_reduction)
             total_D = pca.transform(total_points)
             D = total_D[:len(set_for_dimen_reduction)]
             quiver_D = total_D[len(set_for_dimen_reduction):]
@@ -277,6 +315,30 @@ def display_plot(args, model):
         else:
             pca.fit(set_for_dimen_reduction)
             D = pca.transform(set_for_dimen_reduction)
+    elif args.type == "svd":
+        svd = decomposition.TruncatedSVD(n_components=args.dims)
+        if args.use_autoencoder:
+            total_points = np.concatenate((set_for_dimen_reduction, quiver_ends),axis=0)
+            svd.fit(set_for_dimen_reduction)
+            total_D = svd.transform(total_points)
+            D = total_D[:len(set_for_dimen_reduction)]
+            quiver_D = total_D[len(set_for_dimen_reduction):]
+            arrows = quiver_D - D
+        else:
+            svd.fit(set_for_dimen_reduction)
+            D = svd.transform(set_for_dimen_reduction)
+    elif args.type == "ica":
+        ica = decomposition.FastICA(n_components=args.dims)
+        if args.use_autoencoder:
+            total_points = np.concatenate((set_for_dimen_reduction, quiver_ends),axis=0)
+            ica.fit(set_for_dimen_reduction)
+            total_D = ica.transform(total_points)
+            D = total_D[:len(set_for_dimen_reduction)]
+            quiver_D = total_D[len(set_for_dimen_reduction):]
+            arrows = quiver_D - D
+        else:
+            ica.fit(set_for_dimen_reduction)
+            D = ica.transform(set_for_dimen_reduction)
     elif args.type == "tsne":
         tsne = manifold.TSNE(n_components=args.dims)
         if args.use_autoencoder:
@@ -285,13 +347,9 @@ def display_plot(args, model):
             total_D = tsne.fit_transform(total_points)
             D = total_D[:len(set_for_dimen_reduction)]
             quiver_D = total_D[len(set_for_dimen_reduction):]
-            arrows = quiver_D - D
+            arrows = (quiver_D - D) / np.linalg.norm(arrows)
         else:
             D = tsne.fit_transform(set_for_dimen_reduction)
-
-    print(D.shape)
-
-
 
     if args.dims == 3:
         fig = plt.figure(1, figsize=(4, 3))
@@ -312,7 +370,7 @@ def display_plot(args, model):
         fig, ax = plt.subplots()
         if args.arrows:
             ax.quiver(D[:, 0], D[:, 1], arrows[:, 0],  arrows[:, 1], headaxislength=7, headlength=11, headwidth=8, linewidths=0.25, width=0.00045, color=plt.cm.Dark2(colors), alpha=1)
-            ax.scatter(quiver_D[:, 0], quiver_D[:, 1], c=colors, cmap=plt.cm.Dark2, label=colors, edgecolor='k')
+            # ax.scatter(quiver_D[:, 0], quiver_D[:, 1], c=colors, cmap=plt.cm.Dark2, label=colors, edgecolor='k')
             # ax.scatter(D[:, 0], D[:, 1], c=colors, cmap=plt.cm.Dark2, label=colors, edgecolor='k')
         else:
             ax.scatter(D[:, 0], D[:, 1], c=colors, cmap=plt.cm.Dark2, label=colors, edgecolor='k')
@@ -342,6 +400,54 @@ def display_plot(args, model):
                 plt.text(x[c], y[c], f"{c} {cluster_name[c]}", fontsize=13, bbox={"facecolor":"w", "alpha":0.6})
             else:
                 plt.text(x[c], y[c], f"{c}", fontsize=13, bbox={"facecolor":"w", "alpha":0.6})
+        gt = get_ground_truth_cluster_order(args.dataset)
+        average_angle = 0.0
+        count = 0.0
+        for i in range(len(clusters)):
+            gt_c = gt[clusters[i]]
+            if gt_c is None:
+                continue
+            x_gt_c = x[gt_c]
+            y_gt_c = y[gt_c]
+            gt_arrow = np.array([x_gt_c - D[i, 0], y_gt_c - D[i, 1]])
+            unit_vector_1 = gt_arrow / np.linalg.norm(gt_arrow)
+            unit_vector_2 = arrows[i] / np.linalg.norm(arrows[i])
+            dot_product = np.dot(unit_vector_1, unit_vector_2)
+            angle = np.arccos(dot_product)
+            angle = angle * (180.0/math.pi)
+            # print(i)
+            # print(angle)
+            average_angle += angle
+            count += 1.0
+        average_angle = average_angle / count
+        print ("average angle: ", average_angle)
+        kmeans = KMeans(n_clusters=len(x), random_state=0).fit(D)
+        print(len(kmeans.labels_))
+        # calculate cluster purity:
+        assigned_cluster_counts = {}
+        for i in range(len(clusters)):
+            c = clusters[i]
+            assigned_cluster = kmeans.labels_[i]
+            if assigned_cluster not in assigned_cluster_counts:
+                assigned_cluster_counts[assigned_cluster] = {}
+            if c not in assigned_cluster_counts[assigned_cluster]:
+                assigned_cluster_counts[assigned_cluster][c] = 1.0
+            else:
+                assigned_cluster_counts[assigned_cluster][c] += 1.0
+
+        majority_cluster = {}
+        for assigned_cluster in assigned_cluster_counts.keys():
+            largest_count = 0.0
+            for c, count in  assigned_cluster_counts[assigned_cluster].items():
+                if count > largest_count:
+                    majority_cluster[assigned_cluster] = c
+                    largest_count = count
+        print(majority_cluster)
+        correct = 0.0
+        for i in range(len(clusters)):
+            if majority_cluster[kmeans.labels_[i]] == clusters[i]:
+                correct += 1.0
+        print("purity", correct / len(clusters))
 
     plt.show()
 
@@ -376,7 +482,7 @@ if __name__ == "__main__":
     elif args.model_type == 'linear':
         model = SimpleLinearAutoEncoder(num_genes=32738, emb_dim=512)
     elif args.model_type == 'selu-linear':
-        model = SELUSimpleLinearAutoEncoder(num_genes=dataset.get_num_genes(), emb_dim=32)
+        model = SELUSimpleLinearAutoEncoder()
 
     if torch.cuda.is_available():
         model = model.cuda()
